@@ -1,0 +1,37 @@
+[project]
+name = "socialq"
+version = "0.1.0"
+description = "Takes finished content and guarantees it gets posted."
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "httpx>=0.27",
+    "boto3>=1.34",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+deploy = [
+    "modal>=0.64",
+]
+
+[project.scripts]
+socialq = "socialq.cli:main"
+socialq-migrate = "socialq.migrate:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["socialq*"]
+
+[tool.setuptools.package-data]
+socialq = ["migrations/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

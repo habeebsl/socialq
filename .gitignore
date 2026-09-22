@@ -1,0 +1,15 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+.env
+
+# Test media -- large, and not part of the repo
+*.mp4
+*.mov
+*.webm
+
+# Appwrite deploy staging
+.appwrite-build/
