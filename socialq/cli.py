@@ -118,7 +118,8 @@ def cmd_prune(args) -> int:
         stats = prune(conn, store, dry_run=args.dry_run)
         remaining = usage(conn)
 
-    print(f"pruned={stats.pruned} freed={stats.bytes_freed / 1e9:.2f}GB "
+    print(f"pruned={stats.pruned} (orphans={stats.orphans}) "
+          f"freed={stats.bytes_freed / 1e9:.2f}GB "
           f"remaining={remaining['bytes'] / 1e9:.2f}GB "
           f"({remaining['objects']} objects)")
     if remaining["bytes"] > 7e9:                      # 10 GB free tier (§9)
