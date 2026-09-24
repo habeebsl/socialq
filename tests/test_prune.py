@@ -115,9 +115,51 @@ def test_recent_media_is_kept_even_when_published(conn):
     assert prune(conn, FakeStore(), now=lambda: NOW).pruned == 0
 
 
-def test_media_attached_to_no_post_is_left_alone(conn):
-    """An orphan is more likely a bug than garbage; deleting it hides the bug."""
-    media = seed_media(conn, states=[], attached=False)
+# -- orphans: media registered before anything referenced it ---------------
+#
+# Producers register media at render time, long before publishing, so media
+# with no post is now the normal case rather than a suspected bug. It gets its
+# own, much longer window: an orphan is usually a video nobody has chosen yet.
+
+
+def test_an_orphan_inside_the_grace_period_survives(conn):
+    media = seed_media(conn, states=[], attached=False,
+                       created_at=NOW - timedelta(days=10))
+    assert prune(conn, FakeStore(), now=lambda: NOW).pruned == 0
+    assert pruned_at(conn, media) is None
+
+
+def test_an_orphan_past_the_grace_period_is_pruned(conn):
+    """Without this the bucket fills with renders nobody published: ~22 of
+    every 30 concepts, at ~60MB each, against a 10GB tier."""
+    media = seed_media(conn, states=[], attached=False,
+                       created_at=NOW - timedelta(days=40))
+    store = FakeStore()
+
+    stats = prune(conn, store, now=lambda: NOW)
+
+    assert (stats.pruned, stats.orphans) == (1, 1)
+    assert store.deleted == ["media/abc.mp4"]
+    assert pruned_at(conn, media) is not None
+
+
+def test_the_orphan_window_is_separate_from_the_published_one(conn):
+    """They answer different questions, so one must not silently follow the
+    other: 20 days is past KEEP_FOR but well inside the orphan grace."""
+    media = seed_media(conn, states=[], attached=False,
+                       created_at=NOW - timedelta(days=20))
+
+    assert prune(conn, FakeStore(), now=lambda: NOW).pruned == 0
+    assert prune(conn, FakeStore(), now=lambda: NOW,
+                 keep_orphans_for=timedelta(days=14)).pruned == 1
+    assert pruned_at(conn, media) is not None
+
+
+def test_an_orphan_that_gains_a_pending_post_is_no_longer_an_orphan(conn):
+    """The window a post brings is the one that applies -- a pending target
+    protects its media whatever the media's age."""
+    media = seed_media(conn, states=["pending"],
+                       created_at=NOW - timedelta(days=90))
     assert prune(conn, FakeStore(), now=lambda: NOW).pruned == 0
     assert pruned_at(conn, media) is None
 

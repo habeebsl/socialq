@@ -116,6 +116,81 @@ class MediaStore:
         return self.public_url(key)
 
 
+def upload(
+    path: Path | str,
+    *,
+    project: str,
+    conn: psycopg.Connection | None = None,
+    store: "MediaStore | None" = None,
+) -> str:
+    """Store a file and register it. Returns its public URL. Idempotent.
+
+    Producers call this at render time, long before anything is published, so
+    a rendered-but-unpublished video has a URL to preview and a row that says
+    it still exists. Before this existed, producers reimplemented the key
+    scheme and the skip-if-present upload themselves -- and a second
+    implementation of a storage scheme drifts silently rather than failing.
+
+    `project` is required. An object stored without a media row is invisible
+    to the pruner (§9 works from rows), so it would occupy the bucket for ever
+    with nothing able to reclaim it -- a worse version of the orphan problem
+    the prune rules exist to solve.
+    """
+    from .db import connect
+
+    if store is None:
+        store = MediaStore(R2Config.from_env())
+
+    def register(connection) -> str:
+        # Render-time upload is the FIRST thing a producer does, before any
+        # enqueue has created the project row, so this cannot assume one.
+        connection.execute(
+            "INSERT INTO projects (id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (project,),
+        )
+        return ensure_media(connection, project, Path(path), store).url
+
+    if conn is not None:
+        return register(conn)
+    with connect() as owned:
+        return register(owned)
+
+
+def media_for_url(
+    conn: psycopg.Connection, project_id: str, url: str
+) -> Media | None:
+    """The row for an already-registered URL, or None.
+
+    Looked up by the digest embedded in the key rather than by the URL string:
+    `(project_id, sha256)` is the table's unique index, so this is both exact
+    and free. The bytes are never fetched -- a producer passing a URL is
+    asserting it registered the object, and downloading 60MB to verify that
+    defeats the purpose of passing a URL at all.
+    """
+    digest = sha256_from_url(url)
+    if digest is None:
+        return None
+    row = conn.execute(
+        "SELECT id, project_id, sha256, url, mime, bytes FROM media"
+        " WHERE project_id = %s AND sha256 = %s",
+        (project_id, digest),
+    ).fetchone()
+    return Media(**row) if row else None
+
+
+def sha256_from_url(url: str) -> str | None:
+    """The digest out of a socialq media URL, or None if it is not one."""
+    name = url.rsplit("/", 1)[-1]
+    digest = name.split(".", 1)[0]
+    if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+        return digest
+    return None
+
+
+def is_url(value) -> bool:
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
 def ensure_media(
     conn: psycopg.Connection,
     project_id: str,

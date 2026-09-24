@@ -23,6 +23,31 @@ log = logging.getLogger("socialq.prune")
 # that a human looking into a bad post can still see what was sent.
 KEEP_FOR = timedelta(days=7)
 
+# Media registered at render time that no post ever referenced. Deliberately
+# far longer than KEEP_FOR, and deliberately separate from it: the two answer
+# different questions. A published post's media is history, but an orphan is a
+# video someone may still decide to publish -- a typical batch is ~30 concepts
+# of which ~8 ship, so most orphans are simply not chosen yet.
+#
+# This rule is not optional once producers can register media before
+# publishing. Without it every unpublished render stays for ever, and at ~60MB
+# a video R2's 10 GB free tier holds about 160 of them.
+KEEP_ORPHANS_FOR = timedelta(days=30)
+
+# Media no post has ever referenced: registered at render time and either not
+# chosen, or not chosen yet.
+ORPHANS_SQL = """
+SELECT m.id, m.project_id, m.url, m.sha256, m.bytes
+FROM media m
+WHERE m.pruned_at IS NULL
+  AND m.created_at < %(cutoff)s
+  AND NOT EXISTS (
+    SELECT 1 FROM posts p WHERE m.id = ANY(p.media_ids)
+  )
+ORDER BY m.bytes DESC
+LIMIT %(limit)s
+"""
+
 # Media whose targets are all resolved: published, or dead and never coming
 # back. A `dead` target will not be retried, so its media is safe to drop.
 PRUNABLE_SQL = """
@@ -48,6 +73,7 @@ LIMIT %(limit)s
 @dataclass
 class Stats:
     pruned: int = 0
+    orphans: int = 0
     bytes_freed: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -66,21 +92,36 @@ def prune(
     store,
     *,
     keep_for: timedelta = KEEP_FOR,
+    keep_orphans_for: timedelta = KEEP_ORPHANS_FOR,
     limit: int = 100,
     now=utcnow,
     dry_run: bool = False,
 ) -> Stats:
-    """Delete R2 objects whose posts are all finished with them."""
-    stats = Stats()
+    """Delete R2 objects nothing needs any more.
+
+    Two rules, two windows. Media a post has finished with goes after
+    `keep_for`; media no post ever referenced goes after the much longer
+    `keep_orphans_for`.
+    """
+    moment = now()
     rows = conn.execute(
-        PRUNABLE_SQL, {"cutoff": now() - keep_for, "limit": limit}
+        PRUNABLE_SQL, {"cutoff": moment - keep_for, "limit": limit}
+    ).fetchall()
+    orphans = conn.execute(
+        ORPHANS_SQL,
+        {"cutoff": moment - keep_orphans_for, "limit": max(0, limit - len(rows))},
     ).fetchall()
 
-    for row in rows:
+    orphan_ids = {row["id"] for row in orphans}
+    stats = Stats()
+    for row in list(rows) + list(orphans):
         key = key_for(row["url"])
+        orphan = row["id"] in orphan_ids
         if dry_run:
-            log.info("would prune %s (%.1f MB)", key, row["bytes"] / 1e6)
+            log.info("would prune %s%s (%.1f MB)",
+                     key, " [orphan]" if orphan else "", row["bytes"] / 1e6)
             stats.pruned += 1
+            stats.orphans += orphan
             stats.bytes_freed += row["bytes"]
             continue
         try:
@@ -96,8 +137,10 @@ def prune(
         )
         conn.commit()
         stats.pruned += 1
+        stats.orphans += orphan
         stats.bytes_freed += row["bytes"]
-        log.info("pruned %s (%.1f MB)", key, row["bytes"] / 1e6)
+        log.info("pruned %s%s (%.1f MB)",
+                 key, " [orphan]" if orphan else "", row["bytes"] / 1e6)
 
     return stats
 

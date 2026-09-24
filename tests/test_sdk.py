@@ -346,3 +346,87 @@ def test_an_unregistered_account_name_lists_what_is_available(
 ):
     with pytest.raises(ValidationError, match="main-instagram"):
         enqueue(client, video, accounts={"instagram": ["typo"]})
+
+
+# -- media by URL: register at render time, publish later -----------------
+
+
+def test_enqueue_accepts_a_registered_url_with_no_local_file(
+    conn, client, video, accounts
+):
+    """The point of the whole feature: publishing need not happen on the
+    machine that rendered the file."""
+    url = client.upload(video.name, project="deploysafe")
+    video.unlink()
+
+    result = enqueue(client, video, media=[url])
+
+    assert len(result.targets) == 1
+    media_id = conn.execute(
+        "SELECT media_ids FROM posts WHERE id = %s", (result.post_id,)
+    ).fetchone()["media_ids"]
+    assert conn.execute(
+        "SELECT url FROM media WHERE id = %s", (media_id[0],)
+    ).fetchone()["url"] == url
+
+
+def test_a_url_is_not_uploaded_again(conn, client, video, accounts):
+    url = client.upload(video.name, project="deploysafe")
+    puts_after_upload = len(client.store.client.puts)
+
+    enqueue(client, video, media=[url])
+
+    assert len(client.store.client.puts) == puts_after_upload
+
+
+def test_an_unregistered_url_is_refused_and_says_what_to_do(
+    conn, client, video, accounts
+):
+    url = "https://media.socialq.me/media/" + "b" * 64 + ".mp4"
+
+    with pytest.raises(ValidationError, match="upload it first"):
+        enqueue(client, video, media=[url])
+
+    assert conn.execute("SELECT count(*) AS n FROM posts").fetchone()["n"] == 0
+
+
+def test_an_unregistered_url_is_never_fetched(conn, client, video, accounts):
+    """Downloading 60MB to verify a URL would defeat passing one."""
+    import httpx
+
+    def explode(*a, **k):
+        raise AssertionError("the URL must not be fetched")
+
+    original = httpx.get
+    httpx.get = explode
+    try:
+        with pytest.raises(ValidationError):
+            enqueue(client, video,
+                    media=["https://media.socialq.me/media/" + "c" * 64 + ".mp4"])
+    finally:
+        httpx.get = original
+
+
+def test_a_url_registered_to_another_project_is_refused(
+    conn, client, video, accounts
+):
+    url = client.upload(video.name, project="deploysafe")
+    conn.execute("INSERT INTO projects (id) VALUES ('other')")
+    conn.commit()
+
+    with pytest.raises(ValidationError, match="not registered"):
+        enqueue(client, video, project="other", media=[url])
+
+
+def test_paths_still_work_exactly_as_before(conn, client, video, accounts):
+    """Every existing caller passes paths; base_dir resolution is unchanged."""
+    result = enqueue(client, video, media=[video.name])
+    assert len(result.targets) == 1
+
+
+def test_upload_is_idempotent_through_the_client(conn, client, video):
+    first = client.upload(video.name, project="deploysafe")
+    second = client.upload(video.name, project="deploysafe")
+
+    assert first == second
+    assert len(client.store.client.puts) == 1

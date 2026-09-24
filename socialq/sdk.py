@@ -34,7 +34,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .config import R2Config, database_url
-from .media import Media, ensure_media
+from .media import Media, ensure_media, is_url, media_for_url
 from .models import Post, Surface
 from .publishers.instagram import InstagramGraph
 from .publishers.postpeer import PostPeerTikTok
@@ -87,6 +87,26 @@ class Client:
 
             self._store = MediaStore(R2Config.from_env())
         return self._store
+
+    def upload(self, path: str | Path, *, project: str) -> str:
+        """Store a file now and register it, returning its public URL.
+
+        For producers that render long before they publish: the URL exists
+        immediately, so a rendered-but-unpublished file can be previewed and is
+        recorded as still existing. Pass that URL to `enqueue` later instead of
+        the path, and the bytes are never touched again -- which is what allows
+        publishing from a different machine than the one that rendered it.
+
+        Idempotent on content: the same bytes upload once, however often this
+        is called.
+        """
+        from .media import upload as upload_media
+
+        with psycopg.connect(self._url or database_url(), row_factory=dict_row,
+                             prepare_threshold=None) as conn:
+            return upload_media(
+                self._resolve(path), project=project, conn=conn, store=self.store
+            )
 
     def enqueue(
         self,
@@ -150,10 +170,7 @@ class Client:
                     "INSERT INTO projects (id) VALUES (%s) ON CONFLICT DO NOTHING",
                     (project,),
                 )
-                items = [
-                    ensure_media(conn, project, self._resolve(path), self.store)
-                    for path in media
-                ]
+                items = [self._media(conn, project, entry) for entry in media]
 
                 post_row = conn.execute(
                     "INSERT INTO posts (project_id, external_id, pipeline, caption,"
@@ -183,6 +200,25 @@ class Client:
         )
 
     # -- internals ---------------------------------------------------------
+
+    def _media(self, conn, project: str, entry) -> Media:
+        """One `media` entry: an already-registered URL, or a local path.
+
+        A URL is looked up, never fetched. The producer passing it is asserting
+        it already registered the object, and downloading the bytes to verify
+        would undo the reason for passing a URL.
+        """
+        if not is_url(entry):
+            return ensure_media(conn, project, self._resolve(entry), self.store)
+
+        found = media_for_url(conn, project, entry)
+        if found is None:
+            raise ValidationError(
+                f"{entry} is not registered for project {project}; upload it "
+                "first with Client.upload(path, project=...), or pass the file "
+                "path instead"
+            )
+        return found
 
     def _resolve(self, path: str | Path) -> Path:
         candidate = Path(path)
@@ -315,8 +351,8 @@ def validate(*, caption, surface, cta, hashtags, media, aigc, accounts) -> None:
                     f"{name} has a key for {key!r}, which is not in surface"
                 )
 
-    for path in media:
-        if not Path(path).is_absolute() and not str(path):
+    for entry in media:
+        if not str(entry).strip():
             raise ValidationError("empty media path")
 
 
