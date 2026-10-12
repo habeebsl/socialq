@@ -37,6 +37,9 @@ class Account:
     publisher: str
     external_id: str | None = None
     enabled: bool = True
+    # Publish to the creator's drafts, never publicly. Only publishers that
+    # can honour it accept it; see Registry.
+    draft: bool = False
 
 
 @dataclass(frozen=True)

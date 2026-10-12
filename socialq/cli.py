@@ -157,11 +157,13 @@ def cmd_status(args) -> int:
         print(f"due now: {due}")
 
         for row in conn.execute(
-            "SELECT handle, platform, publisher, enabled FROM accounts ORDER BY id"
+            "SELECT handle, platform, publisher, enabled, draft FROM accounts"
+            " ORDER BY id"
         ).fetchall():
             state = "enabled" if row["enabled"] else "HELD"
+            mode = "  drafts only" if row["draft"] else ""
             print(f"  {row['handle']:<20} {row['platform']:<10} "
-                  f"{row['publisher']:<16} {state}")
+                  f"{row['publisher']:<16} {state}{mode}")
 
         for row in conn.execute(
             "SELECT label, publisher, expires_at, credits_left, enabled"
@@ -284,7 +286,8 @@ def cmd_doctor(args) -> int:
                 continue
             full = conn.execute(
                 "SELECT id, project_id, name, platform, handle, publisher,"
-                " external_id, enabled FROM accounts WHERE id = %s", (row["id"],)
+                " external_id, enabled, draft FROM accounts WHERE id = %s",
+                (row["id"],)
             ).fetchone()
             try:
                 built = registry(Account(**full))
@@ -296,7 +299,10 @@ def cmd_doctor(args) -> int:
                 built, "account_id", "?")
             credential_id = getattr(built, "credential_id", None)
             print(f"  {row['handle']}: {built.name} -> id {detail}"
-                  + (f" via credential {credential_id}" if credential_id else ""))
+                  + (f" via credential {credential_id}" if credential_id else "")
+                  # Read off the built publisher, not the row: this is what
+                  # the worker would actually send.
+                  + (" [DRAFT]" if getattr(built, "draft", False) else ""))
 
     print("storage:")
     try:

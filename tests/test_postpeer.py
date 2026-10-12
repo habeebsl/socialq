@@ -444,7 +444,11 @@ def test_the_same_tiktok_account_has_a_different_id_per_postpeer_account(
     holds its own integration id for the same account."""
     from socialq.models import Account
 
-    seed_credentials(conn, [("a", 3, True), ("b", 17, True)])
+    # Registry's pool reads the wall clock, so the balances must be dated by it.
+    # Pinned to NOW they went stale on 2026-10-01: the monthly reset wiped both
+    # to unknown, the comparison became a tie, and 'a' won by id order.
+    seed_credentials(conn, [("a", 3, True), ("b", 17, True)],
+                     checked_at=datetime.now(timezone.utc))
     account_id = seed_tiktok_account(conn)
     connect_credential(conn, "a", account_id, "tt_via_a")
     connect_credential(conn, "b", account_id, "tt_via_b")
