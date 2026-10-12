@@ -27,6 +27,10 @@ from .secrets import SecretStore
 # one-line config change, so it is refused in code rather than documented.
 FORBIDDEN = {("x", "postpeer"), ("twitter", "postpeer")}
 
+# Publishers that can put a post in the creator's drafts. The Instagram Graph
+# API has no draft mode: a container is published or it is not.
+CAN_DRAFT = {"postpeer"}
+
 
 class UnknownPublisher(LookupError):
     pass
@@ -47,6 +51,8 @@ class Registry:
         self.conn = conn
         self.secrets = secrets
         self.pool = pool or CredentialPool(conn, secrets)
+        # Forces drafts for every account this registry builds. Per-account
+        # drafts are `accounts.draft`; this is for smoke tests.
         self.draft = draft
 
     def __call__(self, account: Account) -> Publisher:
@@ -54,6 +60,14 @@ class Registry:
             raise UnknownPublisher(
                 f"refusing to route {account.platform} through {account.publisher}: "
                 "see §2 on credit cost"
+            )
+        if account.draft and account.publisher not in CAN_DRAFT:
+            # Refused rather than ignored: an account marked draft is one
+            # someone decided must not post publicly, and a publisher that
+            # cannot honour that would post publicly.
+            raise UnknownPublisher(
+                f"account {account.name!r} is marked draft, but "
+                f"{account.publisher} has no draft mode; it would post publicly"
             )
         if account.publisher == "instagram_graph":
             return self._instagram(account)
@@ -90,7 +104,9 @@ class Registry:
             pool.api_key(credential),
             str(credential.resolved_id),
             credential_id=credential.id,
-            draft=self.draft,
+            # Either one is enough. The worker-wide flag (smoke tests) can
+            # force a draft, but it can never make a draft account public.
+            draft=self.draft or account.draft,
             pool=pool,
             credential=credential,
         )

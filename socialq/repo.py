@@ -62,7 +62,7 @@ def load_post(conn: psycopg.Connection, post_id: int) -> Post:
 def load_account(conn: psycopg.Connection, account_id: int) -> Account:
     row = conn.execute(
         "SELECT id, project_id, name, platform, handle, publisher, external_id,"
-        " enabled FROM accounts WHERE id = %s",
+        " enabled, draft FROM accounts WHERE id = %s",
         (account_id,),
     ).fetchone()
     if row is None:

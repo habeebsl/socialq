@@ -45,23 +45,40 @@ def verify_instagram(secrets, token_ref: str, user_id_ref: str):
     return user_id, {"instagram": user_id}
 
 
-def verify_postpeer(secrets, token_ref: str, platform: str):
+def verify_postpeer(secrets, token_ref: str, platform: str, handle: str):
+    """The integration id for THIS handle, matched by name.
+
+    One PostPeer key can hold several TikTok accounts. Taking "the tiktok
+    integration" would pair the account with whichever one the API listed
+    last -- the same wrong-account guess that published to @deployedunsafe on
+    2026-09-22. connect_postpeer.py matches by handle; so must this.
+    """
     key = secrets.get(token_ref)
     client = PostPeerTikTok(key, account_id="")
-    account_ids = {}
+    wanted = handle.lstrip("@").lower()
+    account_ids, matches, seen = {}, [], []
     for item in client.integrations():
         name = item.get("platform") or item.get("provider")
         account_id = str(item.get("accountId") or item.get("id") or "")
-        if name and account_id:
-            account_ids[name] = account_id
-            print(f"  integration {name}: {account_id} "
-                  f"{item.get('username') or ''}")
-    if platform not in account_ids:
+        username = (item.get("username") or item.get("handle")
+                    or item.get("name") or "")
+        if not (name and account_id):
+            continue
+        print(f"  integration {name}: {account_id} {username}")
+        account_ids.setdefault(name, account_id)
+        if name == platform:
+            seen.append(username or account_id)
+            if username.lstrip("@").lower() == wanted:
+                matches.append(account_id)
+
+    if len(matches) != 1:
+        found = ", ".join(seen) or "none"
         raise SystemExit(
-            f"this key has no {platform} integration; connect one in the "
-            "PostPeer dashboard first"
+            f"this key has {len(matches)} {platform} integrations for "
+            f"@{wanted} (connected: {found}); connect it in the PostPeer "
+            "dashboard first, and refusing to guess between duplicates"
         )
-    return account_ids[platform], account_ids
+    return matches[0], account_ids
 
 
 def main() -> int:
@@ -80,6 +97,9 @@ def main() -> int:
                              "accounts sharing a label share a token.")
     parser.add_argument("--enable", action="store_true",
                         help="skip warming and go live immediately (§14)")
+    parser.add_argument("--draft", action="store_true",
+                        help="post to the creator's drafts, never publicly. "
+                             "Rerunning without it makes the account public.")
     args = parser.parse_args()
 
     load_dotenv()
@@ -91,13 +111,17 @@ def main() -> int:
     label = args.label or name
 
     print(f"verifying {args.token_ref} against {args.platform}...")
+    if args.draft and publisher != "postpeer":
+        # Same rule as the registry: refuse rather than post publicly.
+        raise SystemExit(f"{publisher} has no draft mode")
+
     if publisher == "instagram_graph":
         external_id, account_ids = verify_instagram(
             secrets, args.token_ref, args.user_id_ref
         )
     else:
         external_id, account_ids = verify_postpeer(
-            secrets, args.token_ref, args.platform
+            secrets, args.token_ref, args.platform, args.handle
         )
 
     with connect() as conn:
@@ -107,13 +131,14 @@ def main() -> int:
         )
         account = conn.execute(
             "INSERT INTO accounts (project_id, name, platform, handle, publisher,"
-            " external_id, enabled) VALUES (%s,%s,%s,%s,%s,%s,%s)"
+            " external_id, enabled, draft) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"
             " ON CONFLICT (project_id, name, platform) DO UPDATE"
             " SET handle = EXCLUDED.handle, publisher = EXCLUDED.publisher,"
-            "     external_id = EXCLUDED.external_id, enabled = EXCLUDED.enabled"
-            " RETURNING id, enabled",
+            "     external_id = EXCLUDED.external_id, enabled = EXCLUDED.enabled,"
+            "     draft = EXCLUDED.draft"
+            " RETURNING id, enabled, draft",
             (args.project, name, args.platform, args.handle, publisher,
-             external_id, args.enable),
+             external_id, args.enable, args.draft),
         ).fetchone()
         credential = conn.execute(
             "INSERT INTO publisher_credentials (project_id, publisher, label,"
@@ -145,6 +170,8 @@ def main() -> int:
     print(f"credential '{label}' -> {args.token_ref}")
     print(f"pairing: {label} posts to {args.handle} as {external_id}")
     print(f"status: {state}")
+    print("mode: DRAFTS ONLY -- nothing goes public" if account["draft"]
+          else "mode: public")
     return 0
 
 
