@@ -32,6 +32,10 @@ VARS=(
   "R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY:-}"
   "R2_BUCKET=${R2_BUCKET:-}"
   "R2_PUBLIC_BASE_URL=${R2_PUBLIC_BASE_URL:-}"
+  # Caption emails for drafts. Empty turns them off; doctor says so.
+  "RESEND_API_KEY=${RESEND_API_KEY:-}"
+  "NOTIFY_EMAIL_FROM=${NOTIFY_EMAIL_FROM:-}"
+  "NOTIFY_EMAIL_TO=${NOTIFY_EMAIL_TO:-}"
 )
 
 assemble() {
