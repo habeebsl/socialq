@@ -61,15 +61,18 @@ def _store():
 
 def cmd_worker(args) -> int:
     from .db import connect
+    from .notify import Notifier
     from .registry import Registry
     from .worker import Worker
 
     with connect() as conn:
-        stats = Worker(conn, Registry(conn, _store()), batch=args.batch).run_once()
+        stats = Worker(conn, Registry(conn, _store()), batch=args.batch,
+                       notifier=Notifier.from_env()).run_once()
 
-    if stats.claimed:
+    if stats.claimed or stats.notified:
         print(f"claimed={stats.claimed} published={stats.published} "
-              f"retried={stats.retried} waiting={stats.waiting} dead={stats.dead}")
+              f"retried={stats.retried} waiting={stats.waiting} dead={stats.dead} "
+              f"notified={stats.notified}")
     for error in stats.errors:
         print(f"ERROR {error}", file=sys.stderr)
     return 1 if (stats.errors or stats.dead) else 0
@@ -303,6 +306,31 @@ def cmd_doctor(args) -> int:
                   # Read off the built publisher, not the row: this is what
                   # the worker would actually send.
                   + (" [DRAFT]" if getattr(built, "draft", False) else ""))
+
+        # A draft is finished by hand, and TikTok's video drafts arrive with
+        # no caption -- so a draft account with nowhere to send the text is a
+        # post someone has to retype.
+        from .notify import Notifier
+
+        drafts = conn.execute(
+            "SELECT count(*) AS n FROM accounts WHERE draft AND enabled"
+        ).fetchone()["n"]
+        owed = conn.execute(
+            "SELECT count(*) AS n FROM targets t JOIN accounts a"
+            " ON a.id = t.account_id WHERE a.draft AND t.state = 'published'"
+            " AND NOT EXISTS (SELECT 1 FROM draft_notices n"
+            "                 WHERE n.target_id = t.id)"
+        ).fetchone()["n"]
+        notifier = Notifier.from_env()
+        print("draft captions:")
+        if notifier is not None:
+            print(f"  email: {notifier.sender} -> {notifier.recipient}"
+                  f" ({owed} not yet sent)")
+        elif drafts:
+            print(f"  email: NOT CONFIGURED, {drafts} draft account(s) enabled")
+            problems.append("draft captions have nowhere to go")
+        else:
+            print("  email: off (no draft accounts)")
 
     print("storage:")
     try:

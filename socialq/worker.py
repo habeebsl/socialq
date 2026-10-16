@@ -71,6 +71,7 @@ class Stats:
     retried: int = 0
     waiting: int = 0
     dead: int = 0
+    notified: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -90,6 +91,7 @@ class Worker:
         batch: int = 10,
         max_attempts: int = MAX_ATTEMPTS,
         now=utcnow,
+        notifier=None,
     ):
         self.conn = conn
         self.resolve = resolve
@@ -97,6 +99,8 @@ class Worker:
         self.batch = batch
         self.max_attempts = max_attempts
         self.now = now
+        # Emails draft captions; None turns that off. See notify.py.
+        self.notifier = notifier
 
     def run_once(self) -> Stats:
         """One pass: claim a batch, publish each, record each."""
@@ -114,7 +118,22 @@ class Worker:
                 stats.errors.append(f"target {target.id}: {exc}")
                 self.conn.rollback()
                 self._retry(target, f"unhandled: {exc}", stats)
+        self._notify_drafts(stats)
         return stats
+
+    def _notify_drafts(self, stats: Stats) -> None:
+        """Email captions for delivered drafts. Runs every pass, not only
+        after a publish, so an email that failed is retried a minute later."""
+        if self.notifier is None:
+            return
+        from .notify import notify_drafts
+
+        try:
+            stats.notified, _ = notify_drafts(self.conn, self.notifier)
+        except Exception:  # noqa: BLE001 -- the posts are already out; a
+            # broken notice must not turn a good run into a failed one.
+            log.exception("draft notices failed")
+            self.conn.rollback()
 
     def publish_one(self, target: Target, stats: Stats) -> None:
         post = repo.load_post(self.conn, target.post_id)

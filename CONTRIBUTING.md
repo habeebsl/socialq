@@ -73,6 +73,26 @@ Two things that will bite:
 commands on a different scheduler, at 1-minute granularity and $0 within its
 free credits.
 
+### Releasing to producers
+
+Producers (video-maker) install socialq as a package, so a deploy to Appwrite
+does not reach them. **Bump `version` in `pyproject.toml` on every change a
+producer should pick up**, in the same commit.
+
+pip compares version strings, not commits. If the version stays the same,
+`pip install --upgrade` decides the installed copy is already up to date and
+silently keeps the old code. Nothing fails; the producer just runs stale code.
+That happened with 0.1.0 and was only caught by checking the installed code by
+hand.
+
+Bump the minor version for anything that changes the SDK's behaviour or
+signature, and the patch version for fixes. If an environment is already stuck
+on stale code with the same version, this forces a real reinstall:
+
+```bash
+pip install --force-reinstall --no-cache-dir <socialq source>
+```
+
 ### Secrets
 
 Credentials are not environment variables in production. They live encrypted in
