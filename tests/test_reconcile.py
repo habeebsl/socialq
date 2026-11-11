@@ -319,3 +319,67 @@ def test_the_env_store_refuses_to_write_rather_than_lose_a_token(monkeypatch):
 def test_a_missing_secret_is_an_error_not_an_empty_string():
     with pytest.raises(MissingSecret):
         EnvSecretStore().get("NOT_SET_ANYWHERE_12345")
+
+
+def seed_ig_credential(conn, label, account_ids, expires_at):
+    conn.execute("INSERT INTO projects (id) VALUES ('deploysafe')"
+                 " ON CONFLICT DO NOTHING")
+    conn.execute(
+        "INSERT INTO publisher_credentials (project_id, publisher, label,"
+        " api_key_ref, account_ids, expires_at) VALUES ('deploysafe',"
+        " 'instagram_graph', %s, %s, %s, %s)",
+        (label, f"TOKEN_{label}", account_ids, expires_at),
+    )
+    conn.commit()
+
+
+def test_refresh_rows_are_accepted_by_the_real_resolver(conn, tmp_path,
+                                                         monkeypatch):
+    """The production path, not a fake resolver. refresh_tokens selected the
+    row without account_ids, Registry.for_credential_row read it, and every
+    reconcile run crashed for six days without refreshing anything."""
+    from socialq.publishers.instagram import InstagramGraph
+    from socialq.registry import Registry
+
+    seed_ig_credential(conn, "main", '{"instagram": "1784"}',
+                       NOW + timedelta(days=8))
+    store = FileSecretStore(tmp_path / "secrets.json")
+    store.set("TOKEN_main", "old-token")
+    new_expiry = NOW + timedelta(days=60)
+    monkeypatch.setattr(InstagramGraph, "refresh_token",
+                        lambda self: ("new-token", new_expiry))
+    registry = Registry(conn, store)
+
+    refreshed = refresh_tokens(
+        conn, lambda row: (registry.for_credential_row(row), store),
+        now=lambda: NOW,
+    )
+
+    assert refreshed == ["main"]
+    assert store.get("TOKEN_main") == "new-token"
+
+
+def test_one_unresolvable_credential_does_not_block_the_others(conn, tmp_path,
+                                                               monkeypatch,
+                                                               caplog):
+    from socialq.publishers.instagram import InstagramGraph
+    from socialq.registry import Registry
+
+    seed_ig_credential(conn, "broken", '{}', NOW + timedelta(days=3))
+    seed_ig_credential(conn, "main", '{"instagram": "1784"}',
+                       NOW + timedelta(days=3))
+    store = FileSecretStore(tmp_path / "secrets.json")
+    store.set("TOKEN_broken", "x")
+    store.set("TOKEN_main", "old-token")
+    monkeypatch.setattr(InstagramGraph, "refresh_token",
+                        lambda self: ("new-token", NOW + timedelta(days=60)))
+    registry = Registry(conn, store)
+
+    with caplog.at_level("ERROR"):
+        refreshed = refresh_tokens(
+            conn, lambda row: (registry.for_credential_row(row), store),
+            now=lambda: NOW,
+        )
+
+    assert refreshed == ["main"]
+    assert "ALERT token refresh failed for broken" in caplog.text
