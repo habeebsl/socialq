@@ -197,18 +197,23 @@ def refresh_tokens(conn: psycopg.Connection, resolve_credential, now=utcnow) -> 
     """
     refreshed = []
     rows = conn.execute(
-        "SELECT id, project_id, publisher, label, api_key_ref, expires_at"
-        " FROM publisher_credentials"
+        # account_ids is read by Registry.for_credential_row. Leaving it out
+        # crashed every reconcile run from 2026-11-05, when the first token
+        # entered its refresh window, and nothing was refreshed for six days.
+        "SELECT id, project_id, publisher, label, api_key_ref, account_ids,"
+        " expires_at FROM publisher_credentials"
         " WHERE publisher = 'instagram_graph' AND enabled"
     ).fetchall()
 
     for row in rows:
         if not due_for_refresh(row["expires_at"], now()):
             continue
-        publisher, store = resolve_credential(row)
+        # Resolving is inside the try: one credential that cannot be built
+        # must not stop the others from being refreshed.
         try:
+            publisher, store = resolve_credential(row)
             token, expires_at = publisher.refresh_token()
-        except PublishError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see above
             log.error("ALERT token refresh failed for %s: %s", row["label"], exc)
             continue
         store.set(row["api_key_ref"], token)
